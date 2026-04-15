@@ -734,18 +734,61 @@ function getChannelID(el, identifier)
 	return nil
 end
 
---[[ Displays today TV schedule
+--[[ Set chapter markers from EPG data for the current channel.
+     Chapter 0 is placed at position 0 (= now / current programme).
+     Upcoming programmes get offsets relative to now (in seconds).
+@param channelID {String} - channel ID to look up
 --]]
-function showEPG()
-	if not (timer == nil) then
-		timer:kill()
-		timer = nil
-	end
-	local w, h = mp.get_osd_size()
-	local url = mp.get_property("stream-open-filename") or ""
+function setEPGChapters(channelID)
+	if not channelID then return end
 
-	-- Try to find a channel ID by matching each known channel id against the stream URL.
-	-- Pluto TV stream URLs typically contain the channel ID as a path segment.
+	local now_utc = os.time() - opts.utc_offset * 3600
+	local datelong = os.date("%Y%m%d%H%M", now_utc)
+	local date = string.sub(datelong, 1, 8)
+	local yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
+
+	-- collect all programmes for this channel (current + upcoming)
+	local chapters = {}
+	for _, n in ipairs(xmltvdata.kids) do
+		if n.type == "element" and n.name == "programme" and n.attr["channel"] == channelID then
+			local progdate = string.sub(n.attr["start"], 1, 8)
+			if progdate == date or progdate == yesterday then
+				local progstart = string.sub(n.attr["start"], 1, 12)
+				local progstop  = string.sub(n.attr["stop"],  1, 12)
+				-- include currently running and future programmes
+				if progstop >= datelong then
+					local title = ""
+					for _, o in ipairs(n.kids) do
+						if o.name == "title" then
+							for _, p in ipairs(o.kids) do
+								title = p.value or ""
+								break
+							end
+							break
+						end
+					end
+					-- offset in seconds from now as float; current programme gets 0.0
+					local offset = math.max(0.0, tonumber(unixTimestamp(progstart)) - now_utc + 0.0)
+					chapters[#chapters + 1] = { time = offset, title = title }
+				end
+			end
+		end
+	end
+
+	if #chapters == 0 then return end
+
+	-- sort by time offset
+	table.sort(chapters, function(a, b) return a.time < b.time end)
+
+	mp.set_property_native("chapter-list", chapters)
+	mp.msg.info(string.format("EPG: set %d chapter(s) for channel %s", #chapters, channelID))
+end
+
+--[[ Resolve the current channel ID from the active stream URL.
+@returns {String} - channel ID, or nil if not found
+--]]
+function resolveChannelID()
+	local url = mp.get_property("stream-open-filename") or mp.get_property("path") or ""
 	local channelID = nil
 	for _, n in ipairs(xmltvdata.kids) do
 		if n.type == "element" and n.name == "channel" then
@@ -756,14 +799,24 @@ function showEPG()
 			end
 		end
 	end
-
-	-- Fallback: try last URL segment as display-name or channel ID
 	if not channelID then
 		local segment = string.match(url, "[^/]+$")
 		if segment then
 			channelID = getChannelID(xmltvdata, segment)
 		end
 	end
+	return channelID
+end
+
+--[[ Displays today TV schedule
+--]]
+function showEPG()
+	if not (timer == nil) then
+		timer:kill()
+		timer = nil
+	end
+	local w, h = mp.get_osd_size()
+	local channelID = resolveChannelID()
 
 	if channelID then
 		local data = getEPG(xmltvdata, channelID)
@@ -787,4 +840,9 @@ end
 
 -- Set key binding.
 mp.add_key_binding("h", showEPG)
-mp.register_event("file-loaded", showEPG)
+
+mp.register_event("file-loaded", function()
+	local channelID = resolveChannelID()
+	setEPGChapters(channelID)
+	showEPG()
+end)
