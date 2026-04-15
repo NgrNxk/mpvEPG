@@ -747,7 +747,7 @@ function setEPGChapters(channelID)
 	local date = string.sub(datelong, 1, 8)
 	local yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
 
-	-- collect all programmes for this channel (current + upcoming)
+	-- collect current and future programmes for this channel
 	local chapters = {}
 	for _, n in ipairs(xmltvdata.kids) do
 		if n.type == "element" and n.name == "programme" and n.attr["channel"] == channelID then
@@ -755,7 +755,7 @@ function setEPGChapters(channelID)
 			if progdate == date or progdate == yesterday then
 				local progstart = string.sub(n.attr["start"], 1, 12)
 				local progstop  = string.sub(n.attr["stop"],  1, 12)
-				-- include currently running and future programmes
+				-- only current and future programmes
 				if progstop >= datelong then
 					local title = ""
 					for _, o in ipairs(n.kids) do
@@ -767,9 +767,8 @@ function setEPGChapters(channelID)
 							break
 						end
 					end
-					-- offset in seconds from now as float; current programme gets 0.0
-					local offset = math.max(0.0, tonumber(unixTimestamp(progstart)) - now_utc + 0.0)
-					chapters[#chapters + 1] = { time = offset, title = title }
+					local display_time = formatTime(n.attr["start"])
+					chapters[#chapters + 1] = { start_unix = tonumber(unixTimestamp(progstart)), title = display_time .. " " .. title }
 				end
 			end
 		end
@@ -777,11 +776,18 @@ function setEPGChapters(channelID)
 
 	if #chapters == 0 then return end
 
-	-- sort by time offset
-	table.sort(chapters, function(a, b) return a.time < b.time end)
+	-- sort by start time
+	table.sort(chapters, function(a, b) return a.start_unix < b.start_unix end)
 
-	mp.set_property_native("chapter-list", chapters)
-	mp.msg.info(string.format("EPG: set %d chapter(s) for channel %s", #chapters, channelID))
+	-- current programme at 0.0, future ones as seconds from now
+	local chapter_list = {}
+	for _, c in ipairs(chapters) do
+		local offset = math.max(0.0, tonumber(c.start_unix - now_utc) + 0.0)
+		chapter_list[#chapter_list + 1] = { time = offset, title = c.title }
+	end
+
+	mp.set_property_native("chapter-list", chapter_list)
+	mp.msg.info(string.format("EPG: set %d chapter(s) for channel %s", #chapter_list, channelID))
 end
 
 --[[ Resolve the current channel ID from the active stream URL.
