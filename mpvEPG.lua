@@ -11,35 +11,88 @@ require 'os'
 require 'io'
 require 'string'
 
-local config = {
-            xmltv = os.getenv('HOME')..'/.config/mpv/epg/epg.xml', -- path to XMLTV data
-         channels = os.getenv('HOME')..'/.config/mpv/epg/channels.xml', -- path to rytec channels xml
+local opts = {
+    epg_dir        = '',       -- directory containing XMLTV files
 
-       titleColor = '00FBFE', -- now playing title color
-    subtitleColor = '00FBFE', -- now playing short description color
-       clockColor = '00FBFE', -- clock color
-    upcomingColor = 'FFFFFF', -- upcoming list color
-    noEpgMsgColor = '002DD1', -- no EPG message color
+    titleColor     = '00FBFE', -- now playing title color (hex BGR)
+    subtitleColor  = '00FBFE', -- now playing sub-title color (hex BGR)
+    descColor      = 'FFFFFF', -- now playing description color (hex BGR)
+    clockColor     = '00FBFE', -- clock color (hex BGR)
+    upcomingColor  = 'FFFFFF', -- upcoming list color (hex BGR)
+    noEpgMsgColor  = '002DD1', -- no EPG message color (hex BGR)
 
-        titleSize = '50', -- now playing title font size
-     subtitleSize = '40', -- now playing subtitle font size
-     progressSize = '40', -- percentual progress font size
- upcomingTimeSize = '25', -- upcoming broadcast time font size
-upcomingTitleSize = '35', -- upcoming broadcast title font size
+    titleSize      = 50,       -- now playing title font size
+    subtitleSize   = 40,       -- now playing sub-title font size
+    descSize       = 30,       -- now playing description font size
+    progressSize   = 40,       -- progress percentage font size
+    upcomingTimeSize  = 25,    -- upcoming broadcast time font size
+    upcomingTitleSize = 35,    -- upcoming broadcast title font size
 
-         noEpgMsg = 'No EPG for this channel' -- message displayed when no EPG information found
-         duration = 5 -- hide EPG after this time, defined in seconds
+    noEpgMsg       = 'No EPG for this channel', -- message when no EPG found
+    duration       = 5,        -- seconds before EPG overlay hides
+    utc_offset     = 0,        -- offset in hours between EPG timestamps (UTC) and local time; e.g. 2 for CEST (UTC+2)
 }
+require('mp.options').read_options(opts, 'mpvEPG')
+
+-- resolve epg_dir: fall back to ~/.config/mpv/epg if not set via script-opts
+local epg_dir = opts.epg_dir ~= '' and opts.epg_dir or (os.getenv('HOME')..'/.config/mpv/epg')
 
 
 
 local ov = mp.create_osd_overlay('ass-events')
-local SLAXML = require 'slaxdom'
-local xmltv = io.open(config.xmltv):read('*all')
-local channels = io.open(config.channels):read('*all')
+local utils = require 'mp.utils'
 
-local xmltvdata = SLAXML:dom(xmltv,{stripWhitespace=true}).root
-local channelsdata = SLAXML:dom(channels,{stripWhitespace=true}).root
+-- add scripts/lib to the Lua search path so slaxml/slaxdom can be found there
+local script_path = debug.getinfo(1, 'S').source:match('^@(.+)$')
+local script_dir = script_path:match('^(.+)[/\\][^/\\]+$')
+package.path = utils.join_path(script_dir, 'lib/?.lua') .. ';' .. package.path
+
+local SLAXML = require 'slaxdom'
+
+-- Load and merge all .xml files from the configured directory into a single virtual root
+local xmltvdata = {kids = {}}
+local seen_programmes = {} -- deduplication key: channel+start+stop
+local seen_channels = {}   -- deduplication key: channel id
+local files = utils.readdir(epg_dir, 'files')
+if files then
+  table.sort(files)
+  for _, name in ipairs(files) do
+    if name:match('%.xml$') then
+      local path = utils.join_path(epg_dir, name)
+      local f = io.open(path)
+      if f then
+        local raw = f:read('*all')
+        f:close()
+        raw = raw:gsub('<!DOCTYPE[^>]*>', '')
+        local parsed = SLAXML:dom(raw, {stripWhitespace=true}).root
+        if parsed and parsed.kids then
+          for _, kid in ipairs(parsed.kids) do
+            if kid.type == 'element' and kid.name == 'programme' then
+              local key = (kid.attr['channel'] or '')..'|'..(kid.attr['start'] or '')..'|'..(kid.attr['stop'] or '')
+              if not seen_programmes[key] then
+                seen_programmes[key] = true
+                xmltvdata.kids[#xmltvdata.kids+1] = kid
+              end
+            elseif kid.type == 'element' and kid.name == 'channel' then
+              local id = kid.attr['id'] or ''
+              if not seen_channels[id] then
+                seen_channels[id] = true
+                xmltvdata.kids[#xmltvdata.kids+1] = kid
+              end
+            else
+              xmltvdata.kids[#xmltvdata.kids+1] = kid
+            end
+          end
+        end
+        mp.msg.info('Loaded EPG file: '..name)
+      else
+        mp.msg.warn('Could not open EPG file: '..path)
+      end
+    end
+  end
+else
+  mp.msg.error('Could not read EPG directory: '..epg_dir)
+end
 
 local assdraw = require 'mp.assdraw'
 local ass = assdraw.ass_new()
@@ -47,12 +100,18 @@ local ass = assdraw.ass_new()
 local timer
 
 
---[[ Extract hours and minutes from xmltv timestamp and format to HH:MM
-@param time {String} - xmltv timestamp
-@returns {String} - time in form HH:MM
+--[[ Extract hours and minutes from xmltv timestamp, apply utc_offset, and format to HH:MM
+@param time {String} - xmltv timestamp (UTC)
+@returns {String} - local time in form HH:MM
 --]]
 function formatTime(time)
-   return string.sub(time, 9, 12):gsub(('.'):rep(2),'%1:'):sub(1,-2)
+  local h = tonumber(string.sub(time, 9, 10))
+  local m = tonumber(string.sub(time, 11, 12))
+  local total = h * 60 + m + opts.utc_offset * 60
+  -- wrap around midnight
+  total = total % (24 * 60)
+  if total < 0 then total = total + 24 * 60 end
+  return string.format('%02d:%02d', math.floor(total / 60), total % 60)
 end
 
 --[[ Calculate tv show progress in percents
@@ -135,11 +194,13 @@ end
 @returns {String} - TV schedule
 --]]
 function getEPG(el,channel)
-  datelong = os.date('%Y%m%d%H%M')
+  -- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
+  local now_utc = os.time() - opts.utc_offset * 3600
+  datelong = os.date('%Y%m%d%H%M', now_utc)
   date = string.sub(datelong, 1, 8)
-  yesterday = os.date('%Y%m%d',os.time()-24*60*60)
+  yesterday = os.date('%Y%m%d', now_utc - 24*60*60)
 
-  local now = {title='', subtitle=''}
+  local now = {title='', subtitle='', desc=''}
   program = {}
   local progress
   for _,n in ipairs(el.kids) do
@@ -155,16 +216,22 @@ function getEPG(el,channel)
             for _,p in ipairs(o.kids) do
               if progstart<=datelong and progstop>=datelong then -- now playing title
                 progress = calculatePercentage(progstart,progstop,datelong)
-                now.title = string.format('{\\b1\\bord2\\fs%s\\1c&H%s}%s {\\fs%s}(%s%%)\\N',config.titleSize,config.titleColor,p.value,config.progressSize,progress)
+                now.title = string.format('{\\b1\\bord2\\fs%s\\1c&H%s}%s {\\fs%s}(%s%%)\\N',opts.titleSize,opts.titleColor,p.value,opts.progressSize,progress)
                 progressBar(progress)
               elseif progstart>datelong then
-                program[#program+1] = string.format('{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N',config.upcomingTimeSize,config.upcomingColor,start,stop,config.upcomingTitleSize,p.value)
+                program[#program+1] = string.format('{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N',opts.upcomingTimeSize,opts.upcomingColor,start,stop,opts.upcomingTitleSize,p.value)
               end
             end
           elseif o.name=='sub-title' then
             for _,p in ipairs(o.kids) do
-              if progstart<=datelong and progstop>=datelong then -- now playing subtitle
-                now.subtitle = string.format('{\\bord2\\fs%s\\b1\\i1\\1c&H%s}⦗%s-%s⦘{\\b0}- %s\\N\\N',config.subtitleSize,config.subtitleColor,start,stop,p.value)
+              if progstart<=datelong and progstop>=datelong then -- now playing sub-title
+                now.subtitle = string.format('{\\bord2\\fs%s\\b1\\i1\\1c&H%s}⦗%s-%s⦘{\\b0}- %s\\N\\N',opts.subtitleSize,opts.subtitleColor,start,stop,p.value)
+              end
+            end
+          elseif o.name=='desc' then
+            for _,p in ipairs(o.kids) do
+              if progstart<=datelong and progstop>=datelong then -- now playing description
+                now.desc = string.format('{\\bord2\\fs%s\\1c&H%s}%s\\N\\N',opts.descSize,opts.descColor,p.value)
               end
             end
           end
@@ -172,30 +239,43 @@ function getEPG(el,channel)
       end
     end
   end
-  if now.subtitle=='' then now.subtitle = '\\N' end
+  -- sub-title takes priority over desc; fall back to desc if no sub-title present
+  if now.subtitle=='' then
+    now.subtitle = now.desc ~= '' and now.desc or '\\N'
+  end
   table.sort(program)
   table.insert(program,1,now.subtitle)
   table.insert(program,1,now.title)  
   return table.concat(program)
 end
 
---[[ Search for channel ID in rytec channels list xml
+--[[ Search for channel ID in combined XMLTV data by display-name or direct channel ID match.
+     Checks the stream URL for a known channel id from <channel id="..."> elements,
+     or matches a <display-name> child element against the given identifier string.
 @param el {Table} - SLAXML:dom() parsed table
-@param channel {String} - bouquet ID
-@returns {String} - channel ID
+@param identifier {String} - channel ID or display name from stream URL
+@returns {String} - channel ID, or nil if not found
 --]]
-function getChannelName(el,channel)
-  local id
+function getChannelID(el, identifier)
   for _,n in ipairs(el.kids) do
-    if n.type=='element' and n.name=='channel' then 
+    if n.type=='element' and n.name=='channel' then
+      -- direct id match (e.g. channel ID appears in stream URL)
+      if n.attr['id'] == identifier then
+        return n.attr['id']
+      end
+      -- display-name match (fallback)
       for _,o in ipairs(n.kids) do
-        if o.value==channel then
-          id = n.attr['id']
+        if o.name=='display-name' then
+          for _,p in ipairs(o.kids) do
+            if p.value == identifier then
+              return n.attr['id']
+            end
+          end
         end
       end
     end
   end
-  if id then return id end
+  return nil
 end
 
 --[[ Displays today TV schedule
@@ -206,23 +286,44 @@ function showEPG()
     timer = nil
   end
   local w, h = mp.get_osd_size()
-  local channel = string.match(mp.get_property('stream-open-filename'), '[^/]+$')
-  local channelID = getChannelName(channelsdata,channel)
-  if not(channelID==nil) then
-    local data = getEPG(xmltvdata,channelID)
+  local url = mp.get_property('stream-open-filename') or ''
+
+  -- Try to find a channel ID by matching each known channel id against the stream URL.
+  -- Pluto TV stream URLs typically contain the channel ID as a path segment.
+  local channelID = nil
+  for _,n in ipairs(xmltvdata.kids) do
+    if n.type=='element' and n.name=='channel' then
+      local id = n.attr['id']
+      if id and url:find(id, 1, true) then
+        channelID = id
+        break
+      end
+    end
+  end
+
+  -- Fallback: try last URL segment as display-name or channel ID
+  if not channelID then
+    local segment = string.match(url, '[^/]+$')
+    if segment then
+      channelID = getChannelID(xmltvdata, segment)
+    end
+  end
+
+  if channelID then
+    local data = getEPG(xmltvdata, channelID)
     if data then
       ov.data = data
     else
-      ov.data = string.format('{\\b0\\1c&H%s}%s',config.noEpgMsgColor,config.noEpgMsg)
+      ov.data = string.format('{\\b0\\1c&H%s}%s',opts.noEpgMsgColor,opts.noEpgMsg)
       ass.text = ''
     end
   else
-    ov.data = string.format('{\\b0\\1c&H%s}%s',config.noEpgMsgColor,config.noEpgMsg)
+    ov.data = string.format('{\\b0\\1c&H%s}%s',opts.noEpgMsgColor,opts.noEpgMsg)
     ass.text = ''
   end
   ov:update()
   mp.set_osd_ass(w, h, ass.text)
-  timer = mp.add_timeout(config.duration, function() ov:remove(); mp.set_osd_ass(0, 0, ''); end )
+  timer = mp.add_timeout(opts.duration, function() ov:remove(); mp.set_osd_ass(0, 0, ''); end )
 end
  
 -- Set key binding.
