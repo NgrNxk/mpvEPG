@@ -740,7 +740,9 @@ end
 @param channelID {String} - channel ID to look up
 --]]
 function setEPGChapters(channelID)
-	if not channelID then return end
+	if not channelID then
+		return
+	end
 
 	local now_utc = os.time() - opts.utc_offset * 3600
 	local datelong = os.date("%Y%m%d%H%M", now_utc)
@@ -754,7 +756,7 @@ function setEPGChapters(channelID)
 			local progdate = string.sub(n.attr["start"], 1, 8)
 			if progdate == date or progdate == yesterday then
 				local progstart = string.sub(n.attr["start"], 1, 12)
-				local progstop  = string.sub(n.attr["stop"],  1, 12)
+				local progstop = string.sub(n.attr["stop"], 1, 12)
 				-- only current and future programmes
 				if progstop >= datelong then
 					local title = ""
@@ -768,21 +770,27 @@ function setEPGChapters(channelID)
 						end
 					end
 					local display_time = formatTime(n.attr["start"])
-					chapters[#chapters + 1] = { start_unix = tonumber(unixTimestamp(progstart)), title = display_time .. " " .. title }
+					chapters[#chapters + 1] =
+						{ start_unix = tonumber(unixTimestamp(progstart)), title = display_time .. " " .. title }
 				end
 			end
 		end
 	end
 
-	if #chapters == 0 then return end
+	if #chapters == 0 then
+		return
+	end
 
 	-- sort by start time
-	table.sort(chapters, function(a, b) return a.start_unix < b.start_unix end)
+	table.sort(chapters, function(a, b)
+		return a.start_unix < b.start_unix
+	end)
 
-	-- current programme at 0.0, future ones as seconds from now
+	-- chapters at their real offsets from now; current programme at 0.0,
+	-- future ones at their seconds-from-now distance
 	local chapter_list = {}
 	for _, c in ipairs(chapters) do
-		local offset = math.max(0.0, tonumber(c.start_unix - now_utc) + 0.0)
+		local offset = math.max(0.0, c.start_unix - now_utc)
 		chapter_list[#chapter_list + 1] = { time = offset, title = c.title }
 	end
 
@@ -845,7 +853,11 @@ function showEPG()
 end
 
 -- Set key binding.
-mp.add_key_binding("h", showEPG)
+mp.add_key_binding("h", function()
+	local channelID = resolveChannelID()
+	setEPGChapters(channelID)
+	showEPG()
+end)
 
 mp.register_event("file-loaded", function()
 	local channelID = resolveChannelID()
