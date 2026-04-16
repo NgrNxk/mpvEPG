@@ -48,7 +48,7 @@ local SLAXML = {
 		text = function(text, cdata)
 			print(string.format("  %s: %q", cdata and "cdata" or "text", text))
 		end,
-		closeElement = function(name, nsURI, nsPrefix) -- luacheck: ignore
+		closeElement = function(name, _, nsPrefix) -- luacheck: ignore
 			io.write("</")
 			if nsPrefix then
 				io.write(nsPrefix, ":")
@@ -566,6 +566,7 @@ local function urlToFilename(url)
 	return name
 end
 
+local loadXMLFiles
 --[[ Resolve the M3U path loaded playlist file.
 @returns {String|nil}
 --]]
@@ -602,25 +603,14 @@ end
 
 --[[ Main entry point: parse M3U header, download stale EPG files and load them.
      Called once at startup before the regular XML directory scan.
-@param retry_count {Number} - internal retry counter (default 0)
 --]]
-local function loadEPGFromM3U(retry_count)
-	retry_count = retry_count or 0
+local function loadEPGFromM3U()
 	local m3u_path = resolveM3UPath()
-	mp.msg.debug("resolved m3u_path = " .. tostring(m3u_path) .. " (retry: " .. retry_count .. ")")
+	mp.msg.debug("resolved m3u_path = " .. tostring(m3u_path))
 
 	if not m3u_path then
-		-- Retry up to 3 times with 100ms delay (for IPC timing issues)
-		if retry_count < 3 then
-			mp.msg.debug("M3U EPG: no M3U path found, retrying in 700ms (attempt " .. (retry_count + 1) .. "/3)")
-			mp.add_timeout(0.7, function()
-				loadEPGFromM3U(retry_count + 1)
-			end)
-			return
-		else
-			mp.msg.info("M3U EPG: no M3U file found after retries, skipping header-based EPG download")
-			return
-		end
+		mp.msg.info("M3U EPG: no M3U file found, skipping header-based EPG download")
+		return
 	end
 	mp.msg.info("M3U EPG: parsing header from " .. m3u_path)
 
@@ -642,6 +632,7 @@ local function loadEPGFromM3U(retry_count)
 		return
 	end
 
+	local downloaded = false
 	for _, url in ipairs(urls) do
 		local filename = urlToFilename(url)
 		local destPath = utils.join_path(epg_dir, filename)
@@ -649,65 +640,88 @@ local function loadEPGFromM3U(retry_count)
 		local age = mtime and (now - mtime) or math.huge
 
 		if age >= stale_secs then
-			downloadEPG(url, destPath)
+			if downloadEPG(url, destPath) then
+				downloaded = true
+			end
 		else
 			mp.msg.info(string.format("M3U EPG: %s is fresh (%.1fh old), skipping download", filename, age / 3600))
 		end
+	end
+
+	-- Reload XML files if we downloaded new ones
+	if downloaded then
+		mp.msg.info("M3U EPG: reloading XML files after download")
+		loadXMLFiles()
 	end
 end
 
 local ov = mp.create_osd_overlay("ass-events")
 
-loadEPGFromM3U()
-
 -- Load and merge all .xml files from the configured directory into a single virtual root
-xmltvdata = { kids = {} }
+Xmltvdata = { kids = {} }
 local seen_programmes = {} -- deduplication key: channel+start+stop
 local seen_channels = {} -- deduplication key: channel id
-local files = utils.readdir(epg_dir, "files")
-if files then
-	table.sort(files)
-	for _, name in ipairs(files) do
-		if name:match("%.xml$") then
-			local path = utils.join_path(epg_dir, name)
-			local f = io.open(path)
-			if f then
-				local raw = f:read("*all")
-				f:close()
-				raw = raw:gsub("<!DOCTYPE[^>]*>", "")
-				local parsed = SLAXML:dom(raw, { stripWhitespace = true }).root
-				if parsed and parsed.kids then
-					for _, kid in ipairs(parsed.kids) do
-						if kid.type == "element" and kid.name == "programme" then
-							local key = (kid.attr["channel"] or "")
-								.. "|"
-								.. (kid.attr["start"] or "")
-								.. "|"
-								.. (kid.attr["stop"] or "")
-							if not seen_programmes[key] then
-								seen_programmes[key] = true
-								xmltvdata.kids[#xmltvdata.kids + 1] = kid
+
+--[[ Load or reload all XML files from epg_dir into xmltvdata.
+     Can be called multiple times to refresh after downloads.
+--]]
+function loadXMLFiles()
+	-- Clear existing data
+	Xmltvdata = { kids = {} }
+	seen_programmes = {}
+	seen_channels = {}
+
+	local files = utils.readdir(epg_dir, "files")
+	if files then
+		table.sort(files)
+		for _, name in ipairs(files) do
+			if name:match("%.xml$") then
+				local path = utils.join_path(epg_dir, name)
+				local f = io.open(path)
+				if f then
+					local raw = f:read("*all")
+					f:close()
+					raw = raw:gsub("<!DOCTYPE[^>]*>", "")
+					local parsed = SLAXML:dom(raw, { stripWhitespace = true }).root
+					if parsed and parsed.kids then
+						for _, kid in ipairs(parsed.kids) do
+							if kid.type == "element" and kid.name == "programme" then
+								local key = (kid.attr["channel"] or "")
+									.. "|"
+									.. (kid.attr["start"] or "")
+									.. "|"
+									.. (kid.attr["stop"] or "")
+								if not seen_programmes[key] then
+									seen_programmes[key] = true
+									Xmltvdata.kids[#Xmltvdata.kids + 1] = kid
+								end
+							elseif kid.type == "element" and kid.name == "channel" then
+								local id = kid.attr["id"] or ""
+								if not seen_channels[id] then
+									seen_channels[id] = true
+									Xmltvdata.kids[#Xmltvdata.kids + 1] = kid
+								end
+							else
+								Xmltvdata.kids[#Xmltvdata.kids + 1] = kid
 							end
-						elseif kid.type == "element" and kid.name == "channel" then
-							local id = kid.attr["id"] or ""
-							if not seen_channels[id] then
-								seen_channels[id] = true
-								xmltvdata.kids[#xmltvdata.kids + 1] = kid
-							end
-						else
-							xmltvdata.kids[#xmltvdata.kids + 1] = kid
 						end
 					end
+					mp.msg.info("Loaded EPG file: " .. name)
+				else
+					mp.msg.warn("Could not open EPG file: " .. path)
 				end
-				mp.msg.info("Loaded EPG file: " .. name)
-			else
-				mp.msg.warn("Could not open EPG file: " .. path)
 			end
 		end
+	else
+		mp.msg.error("Could not read EPG directory: " .. epg_dir)
 	end
-else
-	mp.msg.error("Could not read EPG directory: " .. epg_dir)
 end
+
+-- Parse M3U header and download EPG files referenced there before loading XMLs
+loadEPGFromM3U()
+
+-- Load downloaded XML files initially
+loadXMLFiles()
 
 local assdraw = require("mp.assdraw")
 local ass = assdraw.ass_new()
@@ -718,7 +732,7 @@ local timer
 @param time {String} - xmltv timestamp (UTC)
 @returns {String} - local time in form HH:MM
 --]]
-function formatTime(time)
+local function formatTime(time)
 	local h = tonumber(string.sub(time, 9, 10))
 	local m = tonumber(string.sub(time, 11, 12))
 	local total = h * 60 + m + opts.utc_offset * 60
@@ -938,7 +952,7 @@ function setEPGChapters(channelID)
 
 	-- collect current and future programmes for this channel
 	local chapters = {}
-	for _, n in ipairs(xmltvdata.kids) do
+	for _, n in ipairs(Xmltvdata.kids) do
 		if n.type == "element" and n.name == "programme" and n.attr["channel"] == channelID then
 			local progdate = string.sub(n.attr["start"], 1, 8)
 			if progdate == date or progdate == yesterday then
@@ -991,7 +1005,7 @@ end
 function resolveChannelID()
 	local url = mp.get_property("stream-open-filename") or mp.get_property("path") or ""
 	local channelID = nil
-	for _, n in ipairs(xmltvdata.kids) do
+	for _, n in ipairs(Xmltvdata.kids) do
 		if n.type == "element" and n.name == "channel" then
 			local id = n.attr["id"]
 			if id and url:find(id, 1, true) then
@@ -1003,7 +1017,7 @@ function resolveChannelID()
 	if not channelID then
 		local segment = string.match(url, "[^/]+$")
 		if segment then
-			channelID = getChannelID(xmltvdata, segment)
+			channelID = getChannelID(Xmltvdata, segment)
 		end
 	end
 	return channelID
@@ -1020,7 +1034,7 @@ function showEPG()
 	local channelID = resolveChannelID()
 
 	if channelID then
-		local data = getEPG(xmltvdata, channelID)
+		local data = getEPG(Xmltvdata, channelID)
 		if data then
 			ov.data = data
 		else
@@ -1048,8 +1062,15 @@ mp.add_key_binding("h", function()
 end)
 
 mp.register_event("file-loaded", function()
-	loadEPGFromM3U()
 	local channelID = resolveChannelID()
 	setEPGChapters(channelID)
 	showEPG()
+end)
+
+-- Watch for playlist-path changes (more reliable for IPC loadfile)
+mp.observe_property("playlist-path", "string", function(name, value)
+	if value and value ~= "" and value:match("[Mm]3[Uu]8?$") then
+		mp.msg.info("Playlist path changed to: " .. value)
+		loadEPGFromM3U()
+	end
 end)
