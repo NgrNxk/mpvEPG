@@ -574,23 +574,27 @@ local function resolveM3UPath()
 	if opts.m3u_path ~= "" then
 		return opts.m3u_path
 	end
+
 	-- mpv stores the playlist source file in "playlist-path"
 	local playlist_path = mp.get_property("playlist-path") or ""
-	mp.msg.debug("playlist_path " .. playlist_path)
 	if playlist_path:match("[Mm]3[Uu]8?$") then
+		mp.msg.debug("Match via playlist_path: " .. playlist_path)
 		return playlist_path
 	end
+
 	local stream_file_name = mp.get_property("stream-open-filename") or ""
-	mp.msg.debug("stream_file_name " .. stream_file_name)
 	if stream_file_name:match("[Mm]3[Uu]8?$") then
+		mp.msg.debug("Match via stream_file_name: " .. stream_file_name)
 		return stream_file_name
 	end
+
 	-- fallback: first entry in the internal playlist
 	local entry = mp.get_property("playlist/0/filename") or ""
-	mp.msg.debug("playlist/0/filename " .. playlist_path)
 	if entry:match("[Mm]3[Uu]8?$") then
+		mp.msg.debug("Match via playlist/0/filename: " .. entry)
 		return entry
 	end
+
 	return nil
 end
 
@@ -1026,11 +1030,12 @@ end
 -- Set key binding.
 mp.add_key_binding("h", function()
 	local channelID = resolveChannelID()
+	loadEPGFromM3U()
 	setEPGChapters(channelID)
 	showEPG()
 end)
 
-mp.register_event("on_load", function()
+mp.register_event("file-loaded", function()
 	loadEPGFromM3U()
 	local channelID = resolveChannelID()
 	setEPGChapters(channelID)
