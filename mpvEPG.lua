@@ -444,8 +444,12 @@ require("os")
 require("io")
 require("string")
 
+-- forward declaration so M3U helpers can use it; assigned below after require("mp.utils")
+local utils
+
 local opts = {
 	epg_dir = "", -- directory containing XMLTV files
+	m3u_path = "", -- path to M3U playlist; if empty, the active playlist is used as fallback
 
 	titleColor = "00FBFE", -- now playing title color (hex BGR)
 	subtitleColor = "00FBFE", -- now playing sub-title color (hex BGR)
@@ -464,17 +468,184 @@ local opts = {
 	noEpgMsg = "No EPG for this channel", -- message when no EPG found
 	duration = 5, -- seconds before EPG overlay hides
 	utc_offset = 0, -- offset in hours between EPG timestamps (UTC) and local time; e.g. 2 for CEST (UTC+2)
+	epg_cache_hours = 6, -- hours before a cached EPG file is considered stale and re-downloaded
 }
 require("mp.options").read_options(opts, "mpvEPG")
 
 -- resolve epg_dir: fall back to ~/.config/mpv/epg if not set via script-opts
 local epg_dir = opts.epg_dir ~= "" and opts.epg_dir or (os.getenv("HOME") .. "/.config/mpv/epg")
 
+-- ============================================================
+-- M3U header parsing and EPG download helpers
+-- ============================================================
+
+--[[ Parse the first line of an M3U file and return url-tvg list and tvg-shift.
+@param path {String} - absolute path to the M3U file
+@returns urls {Table}, tvg_shift {Number|nil}
+--]]
+local function parseM3UHeader(path)
+	local f = io.open(path, "r")
+	if not f then
+		mp.msg.warn("M3U: cannot open file: " .. path)
+		return {}, nil
+	end
+	local line = f:read("*l") -- read first line only
+	f:close()
+
+	if not line or not line:match("^#EXTM3U") then
+		mp.msg.warn("M3U: not a valid M3U file or missing #EXTM3U header: " .. path)
+		return {}, nil
+	end
+
+	-- extract url-tvg="..." (may contain comma-separated URLs)
+	local url_tvg_raw = line:match('[%s;]url%-tvg%s*=%s*"([^"]*)"')
+	local urls = {}
+	if url_tvg_raw then
+		for url in url_tvg_raw:gmatch("[^,%s]+") do
+			urls[#urls + 1] = url
+		end
+	end
+
+	-- extract tvg-shift="..." or tvg-shift="+3" (with or without quotes)
+	local shift_raw = line:match("[%s;]tvg%-shift%s*=%s*[\"']?([+%-]?%d+%.?%d*)[\"']?")
+	local tvg_shift = shift_raw and tonumber(shift_raw) or nil
+
+	return urls, tvg_shift
+end
+
+--[[ Return the file-system modification time of a file (seconds since epoch),
+     or nil if the file does not exist.
+@param path {String}
+@returns {Number|nil}
+--]]
+local function fileModTime(path)
+	local info = utils.file_info(path)
+	return info and info.mtime or nil
+end
+
+--[[ Download a URL to destPath using curl.
+     If the URL ends with .gz the content is decompressed via gunzip.
+     Returns true on success, false otherwise.
+@param url {String}
+@param destPath {String} - destination .xml file (always uncompressed)
+@returns {Boolean}
+--]]
+local function downloadEPG(url, destPath)
+	local is_gz = url:match("%.gz$") or url:match("%.gz%?")
+	local cmd
+
+	if is_gz then
+		cmd = string.format('curl -sL "%s" | gunzip -c > "%s"', url, destPath)
+	else
+		cmd = string.format('curl -sL -o "%s" "%s"', destPath, url)
+	end
+
+	mp.msg.info("EPG download: " .. url .. " -> " .. destPath)
+	local ret = os.execute(cmd)
+	-- os.execute returns 0 or true on success depending on Lua version
+	if ret == 0 or ret == true then
+		mp.msg.info("EPG download succeeded: " .. destPath)
+		return true
+	else
+		mp.msg.warn("EPG download failed for: " .. url)
+		return false
+	end
+end
+
+--[[ Derive a safe filename from a URL (strips protocol and replaces special chars).
+@param url {String}
+@returns {String} - filename without directory
+--]]
+local function urlToFilename(url)
+	local name = url:gsub("^https?://", ""):gsub("[^%w%.%-_]", "_")
+	-- strip trailing .gz so the stored file is always the decompressed .xml
+	name = name:gsub("_gz$", ""):gsub("%.gz$", "")
+	if not name:match("%.xml$") then
+		name = name .. ".xml"
+	end
+	return name
+end
+
+--[[ Resolve the M3U path: use opts.m3u_path if set, otherwise try the currently
+     loaded playlist file.
+@returns {String|nil}
+--]]
+local function resolveM3UPath()
+	if opts.m3u_path ~= "" then
+		return opts.m3u_path
+	end
+	-- mpv stores the playlist source file in "playlist-path"
+	local playlist_path = mp.get_property("playlist-path") or ""
+	mp.msg.debug("playlist_path " .. playlist_path)
+	if playlist_path:match("[Mm]3[Uu]8?$") then
+		return playlist_path
+	end
+	local stream_file_name = mp.get_property("stream-open-filename") or ""
+	mp.msg.debug("stream_file_name " .. stream_file_name)
+	if stream_file_name:match("[Mm]3[Uu]8?$") then
+		return stream_file_name
+	end
+	-- fallback: first entry in the internal playlist
+	local entry = mp.get_property("playlist/0/filename") or ""
+	mp.msg.debug("playlist/0/filename " .. playlist_path)
+	if entry:match("[Mm]3[Uu]8?$") then
+		return entry
+	end
+	return nil
+end
+
+--[[ Main entry point: parse M3U header, download stale EPG files and load them.
+     Called once at startup before the regular XML directory scan.
+--]]
+local function loadEPGFromM3U()
+	local m3u_path = resolveM3UPath()
+	mp.msg.debug("resolved m3u_path = " .. tostring(m3u_path))
+	if not m3u_path then
+		mp.msg.info("M3U EPG: no M3U file found, skipping header-based EPG download")
+		return
+	end
+	mp.msg.info("M3U EPG: parsing header from " .. m3u_path)
+
+	local urls, tvg_shift = parseM3UHeader(m3u_path)
+
+	-- Apply tvg-shift only when utc_offset was not explicitly configured (remains 0)
+	if tvg_shift and opts.utc_offset == 0 then
+		mp.msg.info(string.format("M3U EPG: applying tvg-shift %+g as utc_offset", tvg_shift))
+		opts.utc_offset = tvg_shift
+	end
+
+	local stale_secs = opts.epg_cache_hours * 3600
+	local now = os.time()
+
+	-- verify epg_dir exists before attempting any download
+	local dir_info = utils.file_info(epg_dir)
+	if not dir_info or not dir_info.is_dir then
+		mp.msg.warn("M3U EPG: epg_dir does not exist, skipping download: " .. epg_dir)
+		return
+	end
+
+	for _, url in ipairs(urls) do
+		local filename = urlToFilename(url)
+		local destPath = utils.join_path(epg_dir, filename)
+		local mtime = fileModTime(destPath)
+		local age = mtime and (now - mtime) or math.huge
+
+		if age >= stale_secs then
+			downloadEPG(url, destPath)
+		else
+			mp.msg.info(string.format("M3U EPG: %s is fresh (%.1fh old), skipping download", filename, age / 3600))
+		end
+	end
+end
+
 local ov = mp.create_osd_overlay("ass-events")
-local utils = require("mp.utils")
+utils = require("mp.utils")
+
+-- Parse M3U header and download EPG files referenced there before loading XMLs
+loadEPGFromM3U()
 
 -- Load and merge all .xml files from the configured directory into a single virtual root
-local xmltvdata = { kids = {} }
+xmltvdata = { kids = {} }
 local seen_programmes = {} -- deduplication key: channel+start+stop
 local seen_channels = {} -- deduplication key: channel id
 local files = utils.readdir(epg_dir, "files")
@@ -561,8 +732,8 @@ end
 @returns {String} - unix timestamp
 --]]
 function unixTimestamp(s)
-	p = "(%d%d%d%d)(%d%d)(%d%d)(%d%d)(%d%d)"
-	year, month, day, hour, min = s:match(p)
+	local p = "(%d%d%d%d)(%d%d)(%d%d)(%d%d)(%d%d)"
+	local year, month, day, hour, min = s:match(p)
 	return os.time({ day = day, month = month, year = year, hour = hour, min = min })
 end
 
@@ -625,21 +796,21 @@ end
 function getEPG(el, channel)
 	-- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
 	local now_utc = os.time() - opts.utc_offset * 3600
-	datelong = os.date("%Y%m%d%H%M", now_utc)
-	date = string.sub(datelong, 1, 8)
-	yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
+	local datelong = os.date("%Y%m%d%H%M", now_utc)
+	local date = string.sub(datelong, 1, 8)
+	local yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
 
 	local now = { title = "", subtitle = "", desc = "" }
-	program = {}
+	local program = {}
 	local progress
 	for _, n in ipairs(el.kids) do
 		if n.type == "element" and n.name == "programme" then
-			progdate = string.sub(n.attr["start"], 1, 8)
+			local progdate = string.sub(n.attr["start"], 1, 8)
 			if n.attr["channel"] == channel and (progdate == date or progdate == yesterday) then
-				progstart = string.sub(n.attr["start"], 1, 12)
-				progstop = string.sub(n.attr["stop"], 1, 12)
-				start = formatTime(n.attr["start"])
-				stop = formatTime(n.attr["stop"])
+				local progstart = string.sub(n.attr["start"], 1, 12)
+				local progstop = string.sub(n.attr["stop"], 1, 12)
+				local start = formatTime(n.attr["start"])
+				local stop = formatTime(n.attr["stop"])
 				for _, o in ipairs(n.kids) do
 					if o.name == "title" then
 						for _, p in ipairs(o.kids) do
@@ -859,7 +1030,8 @@ mp.add_key_binding("h", function()
 	showEPG()
 end)
 
-mp.register_event("file-loaded", function()
+mp.register_event("on_load", function()
+	loadEPGFromM3U()
 	local channelID = resolveChannelID()
 	setEPGChapters(channelID)
 	showEPG()
