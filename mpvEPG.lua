@@ -449,7 +449,6 @@ local utils
 
 local opts = {
 	epg_dir = "", -- directory containing XMLTV files
-	m3u_path = "", -- path to M3U playlist; if empty, the active playlist is used as fallback
 
 	titleColor = "00FBFE", -- now playing title color (hex BGR)
 	subtitleColor = "00FBFE", -- now playing sub-title color (hex BGR)
@@ -471,9 +470,10 @@ local opts = {
 	epg_cache_hours = 6, -- hours before a cached EPG file is considered stale and re-downloaded
 }
 require("mp.options").read_options(opts, "mpvEPG")
+utils = require("mp.utils")
 
--- resolve epg_dir: fall back to ~/.config/mpv/epg if not set via script-opts
-local epg_dir = opts.epg_dir ~= "" and opts.epg_dir or (os.getenv("HOME") .. "/.config/mpv/epg")
+-- resolve epg_dir: use mp.command_native to expand ~~ and environment variables
+local epg_dir = mp.command_native({ "expand-path", opts.epg_dir })
 
 -- ============================================================
 -- M3U header parsing and EPG download helpers
@@ -566,16 +566,10 @@ local function urlToFilename(url)
 	return name
 end
 
---[[ Resolve the M3U path: use opts.m3u_path if set, otherwise try the currently
-     loaded playlist file.
+--[[ Resolve the M3U path loaded playlist file.
 @returns {String|nil}
 --]]
 local function resolveM3UPath()
-	if opts.m3u_path ~= "" then
-		mp.msg.debug("Using configured m3u_path: " .. opts.m3u_path)
-		return opts.m3u_path
-	end
-
 	-- mpv stores the playlist source file in "playlist-path"
 	local playlist_path = mp.get_property("playlist-path") or ""
 	if playlist_path ~= "" and playlist_path:match("[Mm]3[Uu]8?$") then
@@ -618,8 +612,8 @@ local function loadEPGFromM3U(retry_count)
 	if not m3u_path then
 		-- Retry up to 3 times with 100ms delay (for IPC timing issues)
 		if retry_count < 3 then
-			mp.msg.debug("M3U EPG: no M3U path found, retrying in 100ms (attempt " .. (retry_count + 1) .. "/3)")
-			mp.add_timeout(0.1, function()
+			mp.msg.debug("M3U EPG: no M3U path found, retrying in 700ms (attempt " .. (retry_count + 1) .. "/3)")
+			mp.add_timeout(0.7, function()
 				loadEPGFromM3U(retry_count + 1)
 			end)
 			return
@@ -663,9 +657,7 @@ local function loadEPGFromM3U(retry_count)
 end
 
 local ov = mp.create_osd_overlay("ass-events")
-utils = require("mp.utils")
 
--- Parse M3U header and download EPG files referenced there before loading XMLs
 loadEPGFromM3U()
 
 -- Load and merge all .xml files from the configured directory into a single virtual root
