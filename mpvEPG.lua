@@ -572,27 +572,35 @@ end
 --]]
 local function resolveM3UPath()
 	if opts.m3u_path ~= "" then
+		mp.msg.debug("Using configured m3u_path: " .. opts.m3u_path)
 		return opts.m3u_path
 	end
 
 	-- mpv stores the playlist source file in "playlist-path"
 	local playlist_path = mp.get_property("playlist-path") or ""
-	if playlist_path:match("[Mm]3[Uu]8?$") then
+	if playlist_path ~= "" and playlist_path:match("[Mm]3[Uu]8?$") then
 		mp.msg.debug("Match via playlist_path: " .. playlist_path)
 		return playlist_path
 	end
 
 	local stream_file_name = mp.get_property("stream-open-filename") or ""
-	if stream_file_name:match("[Mm]3[Uu]8?$") then
+	if stream_file_name ~= "" and stream_file_name:match("[Mm]3[Uu]8?$") then
 		mp.msg.debug("Match via stream_file_name: " .. stream_file_name)
 		return stream_file_name
 	end
 
 	-- fallback: first entry in the internal playlist
 	local entry = mp.get_property("playlist/0/filename") or ""
-	if entry:match("[Mm]3[Uu]8?$") then
+	if entry ~= "" and entry:match("[Mm]3[Uu]8?$") then
 		mp.msg.debug("Match via playlist/0/filename: " .. entry)
 		return entry
+	end
+
+	-- IPC fallback: try 'path' property which is set earlier
+	local path = mp.get_property("path") or ""
+	if path ~= "" and path:match("[Mm]3[Uu]8?$") then
+		mp.msg.debug("Match via path: " .. path)
+		return path
 	end
 
 	return nil
@@ -600,13 +608,25 @@ end
 
 --[[ Main entry point: parse M3U header, download stale EPG files and load them.
      Called once at startup before the regular XML directory scan.
+@param retry_count {Number} - internal retry counter (default 0)
 --]]
-local function loadEPGFromM3U()
+local function loadEPGFromM3U(retry_count)
+	retry_count = retry_count or 0
 	local m3u_path = resolveM3UPath()
-	mp.msg.debug("resolved m3u_path = " .. tostring(m3u_path))
+	mp.msg.debug("resolved m3u_path = " .. tostring(m3u_path) .. " (retry: " .. retry_count .. ")")
+
 	if not m3u_path then
-		mp.msg.info("M3U EPG: no M3U file found, skipping header-based EPG download")
-		return
+		-- Retry up to 3 times with 100ms delay (for IPC timing issues)
+		if retry_count < 3 then
+			mp.msg.debug("M3U EPG: no M3U path found, retrying in 100ms (attempt " .. (retry_count + 1) .. "/3)")
+			mp.add_timeout(0.1, function()
+				loadEPGFromM3U(retry_count + 1)
+			end)
+			return
+		else
+			mp.msg.info("M3U EPG: no M3U file found after retries, skipping header-based EPG download")
+			return
+		end
 	end
 	mp.msg.info("M3U EPG: parsing header from " .. m3u_path)
 
