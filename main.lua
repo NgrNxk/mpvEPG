@@ -730,7 +730,8 @@ local assdraw = require("mp.assdraw")
 local ass = assdraw.ass_new()
 
 local timerOSD
-local show_upcoming_desc = false -- toggle state for upcoming descriptions
+-- Display mode: 0 = only current program, 1 = current + upcoming (no desc), 2 = current + upcoming (with desc)
+local epg_display_mode = 0
 
 --[[ Extract hours and minutes from xmltv timestamp, apply utc_offset, and format to HH:MM
 @param time {String} - xmltv timestamp (UTC)
@@ -825,10 +826,10 @@ end
 --[[ Create today TV schedule for channel from xmltv data
 @param el {Table} - SLAXML:dom() parsed table
 @param channel {String} - channel ID
-@param show_desc {Boolean} - whether to show descriptions in upcoming list
+@param display_mode {Number} - 0=only current, 1=current+upcoming(no desc), 2=current+upcoming(with desc)
 @returns {String} - TV schedule
 --]]
-local function getEPG(el, channel, show_desc)
+local function getEPG(el, channel, display_mode)
 	-- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
 	local now_utc = os.time() - opts.utc_offset * 3600
 	local datelong = os.date("%Y%m%d%H%M", now_utc)
@@ -896,8 +897,8 @@ local function getEPG(el, channel, show_desc)
 							string.format("{\\bord2\\fs%s\\1c&H%s}%s\\N\\N", opts.descSize, opts.descColor, prog_desc)
 					end
 				elseif progstart > datelong then
-					-- upcoming programme
-					if opts.max_upcoming == 0 or #program < opts.max_upcoming then
+					-- upcoming programme (only show if display_mode >= 1)
+					if display_mode >= 1 and (opts.max_upcoming == 0 or #program < opts.max_upcoming) then
 						local entry = string.format(
 							"{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
 							opts.upcomingTimeSize,
@@ -907,8 +908,8 @@ local function getEPG(el, channel, show_desc)
 							opts.upcomingTitleSize,
 							prog_title
 						)
-						-- add description if available and if show_desc is true
-						if show_desc and prog_desc ~= "" then
+						-- add description if display_mode is 2 and description is available
+						if display_mode == 2 and prog_desc ~= "" then
 							entry = entry
 								.. string.format(
 									"{\\bord2\\fs%s\\1c&H%s}%s\\N",
@@ -1061,7 +1062,7 @@ local function showEPG()
 	local channelID = resolveChannelID()
 
 	if channelID then
-		local data = getEPG(Xmltvdata, channelID, show_upcoming_desc)
+		local data = getEPG(Xmltvdata, channelID, epg_display_mode)
 		if data then
 			ov.data = data
 		else
@@ -1077,8 +1078,8 @@ local function showEPG()
 	timerOSD = mp.add_timeout(opts.duration, function()
 		ov:remove()
 		mp.set_osd_ass(0, 0, "")
-		-- reset description toggle when OSD disappears
-		show_upcoming_desc = false
+		-- reset display mode when OSD disappears
+		epg_display_mode = 0
 		if not (timerOSD == nil) then
 			timerOSD:kill()
 			timerOSD = nil
@@ -1086,17 +1087,17 @@ local function showEPG()
 	end)
 end
 
--- Set key binding with toggle functionality.
+-- Set key binding with 3-level toggle functionality.
 mp.add_key_binding("h", function()
 	local channelID = resolveChannelID()
 
 	if timerOSD ~= nil then
-		-- OSD was visible, toggle description display
-		show_upcoming_desc = not show_upcoming_desc
+		-- OSD is visible, cycle through display modes: 0 -> 1 -> 2 -> 0
+		epg_display_mode = (epg_display_mode + 1) % 3
 		showEPG()
 	else
-		-- OSD was not visible, show it without descriptions first
-		show_upcoming_desc = false
+		-- OSD is not visible, show it in mode 0 (only current program)
+		epg_display_mode = 0
 		loadEPGFromM3U()
 		setEPGChapters(channelID)
 		showEPG()
@@ -1106,8 +1107,8 @@ end)
 mp.register_event("file-loaded", function()
 	local channelID = resolveChannelID()
 	setEPGChapters(channelID)
-	-- When auto-showing on file load, don't show descriptions initially
-	show_upcoming_desc = false
+	-- When auto-showing on file load, start with mode 0 (only current program)
+	epg_display_mode = 0
 	showEPG()
 end)
 
