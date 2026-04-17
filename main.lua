@@ -729,7 +729,8 @@ loadXMLFiles()
 local assdraw = require("mp.assdraw")
 local ass = assdraw.ass_new()
 
-local timer
+local timerOSD
+local show_upcoming_desc = false -- toggle state for upcoming descriptions
 
 --[[ Extract hours and minutes from xmltv timestamp, apply utc_offset, and format to HH:MM
 @param time {String} - xmltv timestamp (UTC)
@@ -824,9 +825,10 @@ end
 --[[ Create today TV schedule for channel from xmltv data
 @param el {Table} - SLAXML:dom() parsed table
 @param channel {String} - channel ID
+@param show_desc {Boolean} - whether to show descriptions in upcoming list
 @returns {String} - TV schedule
 --]]
-local function getEPG(el, channel)
+local function getEPG(el, channel, show_desc)
 	-- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
 	local now_utc = os.time() - opts.utc_offset * 3600
 	local datelong = os.date("%Y%m%d%H%M", now_utc)
@@ -905,8 +907,8 @@ local function getEPG(el, channel)
 							opts.upcomingTitleSize,
 							prog_title
 						)
-						-- add description if available
-						if prog_desc ~= "" then
+						-- add description if available and if show_desc is true
+						if show_desc and prog_desc ~= "" then
 							entry = entry
 								.. string.format(
 									"{\\bord2\\fs%s\\1c&H%s}%s\\N",
@@ -1051,15 +1053,15 @@ end
 --[[ Displays today TV schedule
 --]]
 local function showEPG()
-	if not (timer == nil) then
-		timer:kill()
-		timer = nil
+	if not (timerOSD == nil) then
+		timerOSD:kill()
+		timerOSD = nil
 	end
 	local w, h = mp.get_osd_size()
 	local channelID = resolveChannelID()
 
 	if channelID then
-		local data = getEPG(Xmltvdata, channelID)
+		local data = getEPG(Xmltvdata, channelID, show_upcoming_desc)
 		if data then
 			ov.data = data
 		else
@@ -1072,23 +1074,40 @@ local function showEPG()
 	end
 	ov:update()
 	mp.set_osd_ass(w, h, ass.text)
-	timer = mp.add_timeout(opts.duration, function()
+	timerOSD = mp.add_timeout(opts.duration, function()
 		ov:remove()
 		mp.set_osd_ass(0, 0, "")
+		-- reset description toggle when OSD disappears
+		show_upcoming_desc = false
+		if not (timerOSD == nil) then
+			timerOSD:kill()
+			timerOSD = nil
+		end
 	end)
 end
 
--- Set key binding.
+-- Set key binding with toggle functionality.
 mp.add_key_binding("h", function()
 	local channelID = resolveChannelID()
-	loadEPGFromM3U()
-	setEPGChapters(channelID)
-	showEPG()
+
+	if timerOSD ~= nil then
+		-- OSD was visible, toggle description display
+		show_upcoming_desc = not show_upcoming_desc
+		showEPG()
+	else
+		-- OSD was not visible, show it without descriptions first
+		show_upcoming_desc = false
+		loadEPGFromM3U()
+		setEPGChapters(channelID)
+		showEPG()
+	end
 end)
 
 mp.register_event("file-loaded", function()
 	local channelID = resolveChannelID()
 	setEPGChapters(channelID)
+	-- When auto-showing on file load, don't show descriptions initially
+	show_upcoming_desc = false
 	showEPG()
 end)
 
