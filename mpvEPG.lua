@@ -744,35 +744,35 @@ local function formatTime(time)
 	return string.format("%02d:%02d", math.floor(total / 60), total % 60)
 end
 
+--[[ Convert YYYYMMDDHHmm string to unix timestamp
+@param s {String} - time string, format: YYYYMMDDHHmm 
+@returns {String} - unix timestamp
+--]]
+local function unixTimestamp(s)
+	local p = "(%d%d%d%d)(%d%d)(%d%d)(%d%d)(%d%d)"
+	local year, month, day, hour, min = s:match(p)
+	return os.time({ day = day, month = month, year = year, hour = hour, min = min })
+end
+
 --[[ Calculate tv show progress in percents
 @param start {String} - program start, format: YYYYMMDDHHmm 
 @param stop {String} - program end, format: YYYYMMDDHHmm 
 @param now {String} - actual time, format: YYYYMMDDHHmm 
 @returns {String} - Percentage of program progress in two decimal places
 --]]
-function calculatePercentage(start, stop, now)
+local function calculatePercentage(start, stop, now)
 	start = tonumber(unixTimestamp(start))
 	stop = tonumber(unixTimestamp(stop))
 	now = tonumber(unixTimestamp(now))
 	return string.format("%0.2f", (now - start) / (stop - start) * 100)
 end
 
---[[ Convert YYYYMMDDHHmm string to unix timestamp
-@param s {String} - time string, format: YYYYMMDDHHmm 
-@returns {String} - unix timestamp
---]]
-function unixTimestamp(s)
-	local p = "(%d%d%d%d)(%d%d)(%d%d)(%d%d)(%d%d)"
-	local year, month, day, hour, min = s:match(p)
-	return os.time({ day = day, month = month, year = year, hour = hour, min = min })
-end
-
 --[[ Draw tv show progress bar and actual system time
 @param percent {String} - tv show progress in percent
 --]]
-function progressBar(percent)
+local function progressBar(percent)
 	ass = assdraw.ass_new()
-	local w, h = mp.get_osd_size()
+	local w, _ = mp.get_osd_size()
 	local p = ((w - 14) / 100) * percent
 	if not (w == 0) then
 		ass:new_event() -- progress bar background
@@ -823,7 +823,7 @@ end
 @param channel {String} - channel ID
 @returns {String} - TV schedule
 --]]
-function getEPG(el, channel)
+local function getEPG(el, channel)
 	-- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
 	local now_utc = os.time() - opts.utc_offset * 3600
 	local datelong = os.date("%Y%m%d%H%M", now_utc)
@@ -913,7 +913,7 @@ end
 @param identifier {String} - channel ID or display name from stream URL
 @returns {String} - channel ID, or nil if not found
 --]]
-function getChannelID(el, identifier)
+local function getChannelID(el, identifier)
 	for _, n in ipairs(el.kids) do
 		if n.type == "element" and n.name == "channel" then
 			-- direct id match (e.g. channel ID appears in stream URL)
@@ -940,7 +940,7 @@ end
      Upcoming programmes get offsets relative to now (in seconds).
 @param channelID {String} - channel ID to look up
 --]]
-function setEPGChapters(channelID)
+local function setEPGChapters(channelID)
 	if not channelID then
 		return
 	end
@@ -1002,7 +1002,7 @@ end
 --[[ Resolve the current channel ID from the active stream URL.
 @returns {String} - channel ID, or nil if not found
 --]]
-function resolveChannelID()
+local function resolveChannelID()
 	local url = mp.get_property("stream-open-filename") or mp.get_property("path") or ""
 	local channelID = nil
 	for _, n in ipairs(Xmltvdata.kids) do
@@ -1025,7 +1025,7 @@ end
 
 --[[ Displays today TV schedule
 --]]
-function showEPG()
+local function showEPG()
 	if not (timer == nil) then
 		timer:kill()
 		timer = nil
@@ -1068,7 +1068,7 @@ mp.register_event("file-loaded", function()
 end)
 
 -- Watch for playlist-path changes (more reliable for IPC loadfile)
-mp.observe_property("playlist-path", "string", function(name, value)
+mp.observe_property("playlist-path", "string", function(_, value)
 	if value and value ~= "" and value:match("[Mm]3[Uu]8?$") then
 		mp.msg.info("Playlist path changed to: " .. value)
 		loadEPGFromM3U()
