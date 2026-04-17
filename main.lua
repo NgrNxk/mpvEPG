@@ -454,15 +454,17 @@ local opts = {
 	subtitleColor = "00FBFE", -- now playing sub-title color (hex BGR)
 	descColor = "FFFFFF", -- now playing description color (hex BGR)
 	clockColor = "00FBFE", -- clock color (hex BGR)
-	upcomingColor = "FFFFFF", -- upcoming list color (hex BGR)
+	upcomingColor = "FFFFFF", -- upcoming list time/title color (hex BGR)
+	upcomingDescColor = "FFFFFF", -- upcoming list description color (hex BGR)
 	noEpgMsgColor = "002DD1", -- no EPG message color (hex BGR)
 
 	titleSize = 50, -- now playing title font size
 	subtitleSize = 40, -- now playing sub-title font size
 	descSize = 30, -- now playing description font size
 	progressSize = 40, -- progress percentage font size
-	upcomingTimeSize = 25, -- upcoming broadcast time font size
+	upcomingTimeSize = 35, -- upcoming broadcast time font size
 	upcomingTitleSize = 35, -- upcoming broadcast title font size
+	upcomingDescSize = 22, -- upcoming broadcast description font size
 
 	noEpgMsg = "No EPG for this channel", -- message when no EPG found
 	duration = 5, -- seconds before EPG overlay hides
@@ -842,59 +844,78 @@ local function getEPG(el, channel)
 				local progstop = string.sub(n.attr["stop"], 1, 12)
 				local start = formatTime(n.attr["start"])
 				local stop = formatTime(n.attr["stop"])
+
+				-- collect all data for this programme
+				local prog_title = ""
+				local prog_subtitle = ""
+				local prog_desc = ""
+
 				for _, o in ipairs(n.kids) do
 					if o.name == "title" then
 						for _, p in ipairs(o.kids) do
-							if progstart <= datelong and progstop >= datelong then -- now playing title
-								progress = calculatePercentage(progstart, progstop, datelong)
-								now.title = string.format(
-									"{\\b1\\bord2\\fs%s\\1c&H%s}%s {\\fs%s}(%s%%)\\N",
-									opts.titleSize,
-									opts.titleColor,
-									p.value,
-									opts.progressSize,
-									progress
-								)
-								progressBar(progress)
-							elseif progstart > datelong then
-								-- only add if we haven't reached the limit (0 = unlimited)
-								if opts.max_upcoming == 0 or #program < opts.max_upcoming then
-									program[#program + 1] = string.format(
-										"{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
-										opts.upcomingTimeSize,
-										opts.upcomingColor,
-										start,
-										stop,
-										opts.upcomingTitleSize,
-										p.value
-									)
-								end
-							end
+							prog_title = p.value or ""
 						end
 					elseif o.name == "sub-title" then
 						for _, p in ipairs(o.kids) do
-							if progstart <= datelong and progstop >= datelong then -- now playing sub-title
-								now.subtitle = string.format(
-									"{\\bord2\\fs%s\\b1\\i1\\1c&H%s}⦗%s-%s⦘{\\b0}- %s\\N\\N",
-									opts.subtitleSize,
-									opts.subtitleColor,
-									start,
-									stop,
-									p.value
-								)
-							end
+							prog_subtitle = p.value or ""
 						end
 					elseif o.name == "desc" then
 						for _, p in ipairs(o.kids) do
-							if progstart <= datelong and progstop >= datelong then -- now playing description
-								now.desc = string.format(
-									"{\\bord2\\fs%s\\1c&H%s}%s\\N\\N",
-									opts.descSize,
-									opts.descColor,
-									p.value
-								)
-							end
+							prog_desc = p.value or ""
 						end
+					end
+				end
+
+				-- now process based on time
+				if progstart <= datelong and progstop >= datelong then
+					-- now playing
+					progress = calculatePercentage(progstart, progstop, datelong)
+					now.title = string.format(
+						"{\\b1\\bord2\\fs%s\\1c&H%s}%s {\\fs%s}(%s%%)\\N",
+						opts.titleSize,
+						opts.titleColor,
+						prog_title,
+						opts.progressSize,
+						progress
+					)
+					progressBar(progress)
+
+					if prog_subtitle ~= "" then
+						now.subtitle = string.format(
+							"{\\bord2\\fs%s\\b1\\i1\\1c&H%s}⦗%s-%s⦘{\\b0}- %s\\N\\N",
+							opts.subtitleSize,
+							opts.subtitleColor,
+							start,
+							stop,
+							prog_subtitle
+						)
+					elseif prog_desc ~= "" then
+						now.desc =
+							string.format("{\\bord2\\fs%s\\1c&H%s}%s\\N\\N", opts.descSize, opts.descColor, prog_desc)
+					end
+				elseif progstart > datelong then
+					-- upcoming programme
+					if opts.max_upcoming == 0 or #program < opts.max_upcoming then
+						local entry = string.format(
+							"{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
+							opts.upcomingTimeSize,
+							opts.upcomingColor,
+							start,
+							stop,
+							opts.upcomingTitleSize,
+							prog_title
+						)
+						-- add description if available
+						if prog_desc ~= "" then
+							entry = entry
+								.. string.format(
+									"{\\bord2\\fs%s\\1c&H%s}%s\\N",
+									opts.upcomingDescSize,
+									opts.upcomingDescColor,
+									prog_desc
+								)
+						end
+						program[#program + 1] = entry
 					end
 				end
 			end
