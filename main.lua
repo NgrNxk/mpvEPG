@@ -468,6 +468,7 @@ local opts = {
 	duration = 5, -- seconds before EPG overlay hides
 	utc_offset = 0, -- offset in hours between EPG timestamps (UTC) and local time; e.g. 2 for CEST (UTC+2)
 	epg_cache_hours = 6, -- hours before a cached EPG file is considered stale and re-downloaded
+	max_upcoming = 5, -- maximum number of upcoming programmes to display (set to 0 to show all)
 }
 require("mp.options").read_options(opts, "mpvEPG")
 utils = require("mp.utils")
@@ -856,15 +857,18 @@ local function getEPG(el, channel)
 								)
 								progressBar(progress)
 							elseif progstart > datelong then
-								program[#program + 1] = string.format(
-									"{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
-									opts.upcomingTimeSize,
-									opts.upcomingColor,
-									start,
-									stop,
-									opts.upcomingTitleSize,
-									p.value
-								)
+								-- only add if we haven't reached the limit (0 = unlimited)
+								if opts.max_upcoming == 0 or #program < opts.max_upcoming then
+									program[#program + 1] = string.format(
+										"{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
+										opts.upcomingTimeSize,
+										opts.upcomingColor,
+										start,
+										stop,
+										opts.upcomingTitleSize,
+										p.value
+									)
+								end
 							end
 						end
 					elseif o.name == "sub-title" then
