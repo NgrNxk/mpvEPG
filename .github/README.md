@@ -1,69 +1,88 @@
 # mpvEPG
 
-Simple EPG information for enigma/dreambox HTTP streams in [mpv](https://mpv.io).
+EPG overlay for [mpv](https://mpv.io) that loads XMLTV data and displays the current programme and upcoming entries directly in the player.
 
 ## Screenshot
 
 ![mpvEPG sample screenshot](screenshot.jpg)
 
-## Dependency
+## Features
 
-[SLAXML](https://github.com/Phrogz/SLAXML) - pure-Lua SAX-like streaming XML parser.
+- Current programme with progress bar
+- Upcoming programmes in the same overlay
+- XMLTV support from a configured folder
+- Optional auto-download of EPG files from M3U `url-tvg` entries
+- `tvg-shift` handling via `utc_offset`
+- Chapter markers based on the active channel
+- Configurable colors, sizes and duration
 
-You can install slaxml using `luarocks`
+## Requirements
 
-```
-luarocks install --lua-version 5.1 slaxml
-```
+- mpv with Lua support
+- XMLTV files in XML format
+- Optional: M3U playlist with `#EXTM3U` and `url-tvg=...`
 
-## Installing
+The script already includes the required SLAXML parser, so no extra Lua dependency is needed.
 
-### Script
-mpv reads its configuration from `MPV_HOME` directory. On *nix systems it is
-`~/.config/mpv`, see [files](https://mpv.io/manual/stable/#files) section of
-the manual for the Windows configuration files.
+## Installation
 
-To install the script, copy `mpvEPG.lua` to the `MPV_HOME/scripts/` directory to load it automatically. Alternatively you can use the `--script=/path/to/mpvEPG.lua` command line option from mpv or you can create profile in your `mpv.conf`
+Copy `main.lua` into your mpv scripts directory:
 
-```
-[epg]
-script=/path/to/mpvEPG.lua
-```
-and use the `--profile=epg` command line option to use the profile.
+- Linux: `~/.config/mpv/scripts/`
+- Windows: `%APPDATA%\mpv\scripts\`
+- portable mpv: `scripts/` in the mpv installation directory
 
-### XMLTV data files
-By default script searches for XMLTV data files in `MPV_HOME/epg/` directory. You need two files for the script to function:
+You can also load it explicitly with a command line option:
 
-- `epg.xml` which contains EPG data in XMLTV format
-- `channels.xml` which contains satelite bouquet id to channel name mapings
-
-#### XML data samples
-**epg.xml**
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<tv generator-info-name="Rytec" generator-info-url="https://forums.openpli.org">
-  <programme start="20200420175500 +0200" stop="20200420190000 +0200" channel="JOJ.sk">
-    <title lang="cs">MOJA MAMA VARÍ LEPŠIE AKO TVOJA</title>
-    <sub-title lang="cs">[Mag]  (E4)</sub-title>
-    <desc lang="cs">Rodinno-zábavná televízna show nielen o varení. Dve súperiace rodiny si navzájom skrížia varešky a bojujú svojimi "naj receptami", ktoré musia uvariť deti za pomoci svojej mamy či otca.</desc>
-  </programme>
-</tv>
-```
-**channels.xml**
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<channels>
-  <channel id="JOJ.sk">1:0:1:3398:C89:3:EB0000:0:0:0:</channel>
-  <channel id="JOJ.sk">1:0:19:3398:C89:3:EB0000:0:0:0:</channel>
-</channels>
+```bash
+mpv --script=/path/to/main.lua
 ```
 
+## Configuration
+
+Set the XMLTV directory in `mpv.conf` or via `script-opts`:
+
+```ini
+script-opts=mpvEPG-epg_dir=~/epg
+```
+
+Common options:
+
+```ini
+script-opts=mpvEPG-epg_dir=~/epg,mpvEPG-utc_offset=1,mpvEPG-duration=8,mpvEPG-max_upcoming=5,mpvEPG-epg_cache_hours=12
+```
+
+Available settings include:
+
+- `epg_dir`: folder containing XMLTV `.xml` files
+- `utc_offset`: offset between UTC and local time, for example `2` for UTC+2
+- `duration`: time in seconds before the overlay disappears
+- `max_upcoming`: maximum number of upcoming programmes shown
+- `epg_cache_hours`: how long a cached EPG file stays fresh before re-downloading
+- color and font size options such as `titleColor`, `subtitleColor`, `descColor`, `titleSize`, `upcomingTitleSize`
+
+## M3U auto-download
+
+If the active playlist is an M3U file, the script reads the header and checks for `url-tvg` entries. Example:
+
+```text
+#EXTM3U url-tvg="https://example.com/epg.xml.gz,https://example.com/epg2.xml.gz" tvg-shift="2"
+```
+
+The script then downloads stale EPG files into the configured `epg_dir` and reloads them automatically.
 
 ## Usage
-Press `h` to display EPG, script also listens for `file-loaded` event and automaticaly displays EPG when you switch channel.
+
+Press `h` to toggle the EPG overlay.
+
+Repeated presses cycle through the display modes:
+
+1. Current programme only
+2. Current programme + upcoming programmes without descriptions
+3. Current programme + upcoming programmes with descriptions
+
+The script also refreshes the overlay when the media file changes.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is licensed under the MIT License. See [LICENSE.md](LICENSE.md) for details.
