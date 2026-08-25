@@ -4,7 +4,9 @@ EPG overlay for [mpv](https://mpv.io) that loads XMLTV data and displays the cur
 
 ## Screenshot
 
-![mpvEPG sample screenshot](screenshot.jpg)
+![mpvEPG screenshot 1](mpv-shot0001.jpg)
+![mpvEPG screenshot 2](mpv-shot0002.jpg)
+![mpvEPG screenshot 3](mpv-shot0003.jpg)
 
 ## Features
 
