@@ -1,0 +1,8 @@
+* text=auto
+
+*.lua text eol=lf
+*.md text eol=lf
+*.rst text eol=lf
+*.gitignore text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
