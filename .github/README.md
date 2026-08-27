@@ -20,6 +20,7 @@ EPG overlay for [mpv](https://mpv.io) that loads XMLTV data and displays the cur
 
 ## Requirements
 
+- curl
 - mpv with Lua support
 - XMLTV files in XML format
 - Optional: M3U playlist with `#EXTM3U` and `url-tvg=...`
