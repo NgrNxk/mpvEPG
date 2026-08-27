@@ -677,7 +677,7 @@ Xmltvdata = {
 local seen_programmes = {} -- deduplication key: channel+start+stop
 local seen_channels = {} -- deduplication key: channel id
 
---[[ Load or reload all XML files from epg_dir into xmltvdata.
+--[[ Load or reload all XML files from epg_dir into Xmltvdata.
      Can be called multiple times to refresh after downloads.
 --]]
 function loadXMLFiles()
@@ -851,8 +851,8 @@ end
 local function getEPG(el, channel, display_mode)
     -- subtract utc_offset to convert local time to UTC for comparison with XML timestamps
     local now_utc = os.time() - opts.utc_offset * 3600
-    local datelong = os.date("%Y%m%d%H%M", now_utc)
-    local date = string.sub(datelong, 1, 8)
+    local dateLong = os.date("%Y%m%d%H%M", now_utc)
+    local date = string.sub(dateLong, 1, 8)
     local yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
 
     local now = {
@@ -864,10 +864,10 @@ local function getEPG(el, channel, display_mode)
     local progress
     for _, n in ipairs(el.kids) do
         if n.type == "element" and n.name == "programme" then
-            local progdate = string.sub(n.attr["start"], 1, 8)
-            if n.attr["channel"] == channel and (progdate == date or progdate == yesterday) then
-                local progstart = string.sub(n.attr["start"], 1, 12)
-                local progstop = string.sub(n.attr["stop"], 1, 12)
+            local progDate = string.sub(n.attr["start"], 1, 8)
+            if n.attr["channel"] == channel and (progDate == date or progDate == yesterday) then
+                local progStart = string.sub(n.attr["start"], 1, 12)
+                local progStop = string.sub(n.attr["stop"], 1, 12)
                 local start = formatTime(n.attr["start"])
                 local stop = formatTime(n.attr["stop"])
 
@@ -893,9 +893,9 @@ local function getEPG(el, channel, display_mode)
                 end
 
                 -- now process based on time
-                if progstart <= datelong and progstop >= datelong then
+                if progStart <= dateLong and progStop >= dateLong then
                     -- now playing
-                    progress = calculatePercentage(progstart, progstop, datelong)
+                    progress = calculatePercentage(progStart, progStop, dateLong)
                     now.title = string.format("{\\b1\\bord2\\fs%s\\1c&H%s}%s {\\fs%s}(%s%%)\\N", opts.titleSize,
                         opts.titleColor, prog_title, opts.progressSize, progress)
                     progressBar(progress)
@@ -907,7 +907,7 @@ local function getEPG(el, channel, display_mode)
                         now.desc = string.format("{\\bord2\\fs%s\\1c&H%s}%s\\N\\N", opts.descSize, opts.descColor,
                             prog_desc)
                     end
-                elseif progstart > datelong then
+                elseif progStart > dateLong then
                     -- upcoming programme (only show if display_mode >= 1)
                     if display_mode >= 1 and (opts.max_upcoming == 0 or #program < opts.max_upcoming) then
                         local entry = string.format("{\\b1\\be\\fs%s\\1c&H%s}⦗%s – %s⦘{\\b0\\fs%s} %s\\N",
@@ -974,20 +974,20 @@ local function setEPGChapters(channelID)
     end
 
     local now_utc = os.time() - opts.utc_offset * 3600
-    local datelong = os.date("%Y%m%d%H%M", now_utc)
-    local date = string.sub(datelong, 1, 8)
+    local dateLong = os.date("%Y%m%d%H%M", now_utc)
+    local date = string.sub(dateLong, 1, 8)
     local yesterday = os.date("%Y%m%d", now_utc - 24 * 60 * 60)
 
     -- collect current and future programmes for this channel
     local chapters = {}
     for _, n in ipairs(Xmltvdata.kids) do
         if n.type == "element" and n.name == "programme" and n.attr["channel"] == channelID then
-            local progdate = string.sub(n.attr["start"], 1, 8)
-            if progdate == date or progdate == yesterday then
-                local progstart = string.sub(n.attr["start"], 1, 12)
-                local progstop = string.sub(n.attr["stop"], 1, 12)
+            local progDate = string.sub(n.attr["start"], 1, 8)
+            if progDate == date or progDate == yesterday then
+                local progStart = string.sub(n.attr["start"], 1, 12)
+                local progStop = string.sub(n.attr["stop"], 1, 12)
                 -- only current and future programmes
-                if progstop >= datelong then
+                if progStop >= dateLong then
                     local title = ""
                     for _, o in ipairs(n.kids) do
                         if o.name == "title" then
@@ -1000,7 +1000,7 @@ local function setEPGChapters(channelID)
                     end
                     local display_time = formatTime(n.attr["start"])
                     chapters[#chapters + 1] = {
-                        start_unix = tonumber(unixTimestamp(progstart)),
+                        start_unix = tonumber(unixTimestamp(progStart)),
                         title = display_time .. " " .. title
                     }
                 end
